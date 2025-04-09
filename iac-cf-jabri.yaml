@@ -254,6 +254,7 @@ Resources:
       Source:
         Type: GITHUB
         Location: !Sub "https://github.com/${GitHubRepo}"
+        BuildSpec: buildspec.yml
       Environment:
         ComputeType: BUILD_GENERAL1_SMALL
         Image: aws/codebuild/standard:5.0
