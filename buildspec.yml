@@ -3,21 +3,23 @@ version: 0.2
 phases:
   pre_build:
     commands:
-      - echo "Using cached Python image to avoid Docker Hub limits..."
-      - docker pull python:3.9-slim || sleep 60 && docker pull python:3.9-slim || true
-      - echo "Logging in to Amazon ECR..."
+      # Hardcoded Docker Hub login (replace with your credentials)
+      - echo "Logging in to Docker Hub..."
+      - docker login -u nacerdev12 -p Jabjab123456
+      
+      # Pull Python image with retries
+      - docker pull python:3.9-slim || sleep 30 && docker pull python:3.9-slim || true
+
+      # ECR login (keep your existing setup)
       - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
 
   build:
     commands:
-      - echo "Building Docker image..."
       - docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/wild-rydes-app:latest .
 
   post_build:
     commands:
-      - echo "Pushing Docker image..."
       - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/wild-rydes-app:latest
-      - echo "Creating imagedefinitions.json..."
       - echo '[{"name":"wild-rydes-app","imageUri":"'$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/wild-rydes-app:latest'"}]' > imagedefinitions.json
 
 artifacts:
