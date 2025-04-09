@@ -172,7 +172,10 @@ Resources:
       VpcId: !Ref VPC
       TargetType: ip
       HealthCheckPath: /
-
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 2
+      
   Listener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -260,9 +263,16 @@ Resources:
         Image: aws/codebuild/standard:5.0
         Type: LINUX_CONTAINER
         PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: ECR_REPO_URI
+            Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/wild-rydes-app"
       ServiceRole: !GetAtt CodeBuildRole.Arn
       Artifacts:
-        Type: NO_ARTIFACTS
+        Type: CODEPIPELINE
 
   ### CodePipeline ###
   PipelineRole:
@@ -277,11 +287,15 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AdministratorAccess
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
 
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
       RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Sub "codepipeline-${AWS::Region}-${AWS::AccountId}"
       Stages:
         - Name: Source
           Actions:
@@ -294,10 +308,11 @@ Resources:
               OutputArtifacts:
                 - Name: SourceOutput
               Configuration:
-                Owner: !Select [ 0, !Split [ "/", !Ref GitHubRepo ] ]
-                Repo: !Select [ 1, !Split [ "/", !Ref GitHubRepo ] ]
+                Owner: !Select [0, !Split ["/", !Ref GitHubRepo]]
+                Repo: !Select [1, !Split ["/", !Ref GitHubRepo]]
                 Branch: !Ref GitHubBranch
                 OAuthToken: !Ref GitHubToken
+
         - Name: Build
           Actions:
             - Name: CodeBuild
@@ -308,8 +323,11 @@ Resources:
                 Version: 1
               InputArtifacts:
                 - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
               Configuration:
                 ProjectName: !Ref CodeBuildProject
+
         - Name: Deploy
           Actions:
             - Name: DeployToECS
@@ -319,7 +337,7 @@ Resources:
                 Provider: ECS
                 Version: 1
               InputArtifacts:
-                - Name: SourceOutput
+                - Name: BuildOutput
               Configuration:
                 ClusterName: !Ref ECSCluster
                 ServiceName: !Ref ECSService
