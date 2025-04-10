@@ -4,13 +4,20 @@ Description: Wild Rydes Fargate App with CI/CD via CodePipeline
 Parameters:
   GitHubRepo:
     Type: String
-    Default: faizandev12/devops_finaltest
+    Default: uakanksha/Final
   GitHubBranch:
     Type: String
     Default: main
   GitHubToken:
     Type: String
     NoEcho: true
+  DockerHubUsername:
+    Type: String
+    Default: your-dockerhub-username
+  DockerHubPassword:
+    Type: String
+    NoEcho: true
+
 
 Resources:
 
@@ -62,6 +69,14 @@ Resources:
       VpcId: !Ref VPC
       AvailabilityZone: !Select [ 1, !GetAZs "" ]
       CidrBlock: 10.0.4.0/24
+  MyEIP:
+    Type: AWS::EC2::EIP
+
+  MyNATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt MyEIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -90,7 +105,7 @@ Resources:
   PrivateRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
-      VpcId: !Ref MyVPC
+      VpcId: !Ref VPC
       Tags:
         - Key: Name
           Value: Private Route Table
@@ -164,7 +179,10 @@ Resources:
       VpcId: !Ref VPC
       TargetType: ip
       HealthCheckPath: /
-
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 2
+      
   Listener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -224,11 +242,10 @@ Resources:
         - ContainerName: wild-rydes-app
           ContainerPort: 80
           TargetGroupArn: !Ref TargetGroup
-
-  ### CodeBuild ###
   CodeBuildRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: WildRydesCodeBuildRole
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -237,28 +254,12 @@ Resources:
               Service: codebuild.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSCodeBuildAdminAccess
+        - arn:aws:iam::aws:policy/AdministratorAccess
 
-  CodeBuildProject:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: WildRydesBuild
-      Source:
-        Type: GITHUB
-        Location: !Sub "https://github.com/${GitHubRepo}"
-      Environment:
-        ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/standard:5.0
-        Type: LINUX_CONTAINER
-        PrivilegedMode: true
-      ServiceRole: !GetAtt CodeBuildRole.Arn
-      Artifacts:
-        Type: NO_ARTIFACTS
-
-  ### CodePipeline ###
   PipelineRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: WildRydesPipelineRole
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -269,10 +270,54 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AdministratorAccess
 
+        
+
+  ### CodeBuild ###
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildRole
+    Properties:
+      Name: WildRydesBuild
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: DOCKERHUB_USERNAME
+            Value: !Ref DockerHubUsername
+          - Name: DOCKERHUB_PASSWORD
+            Value: !Ref DockerHubPassword
+  ArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "codepipeline-${AWS::Region}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      AccessControl: Private
+
+  ### CodePipeline ###
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
+    DependsOn: 
+      - CodeBuildProject
+      - PipelineRole
     Properties:
+      Name: WildRydesPipeline
       RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactStoreBucket  
       Stages:
         - Name: Source
           Actions:
@@ -281,14 +326,15 @@ Resources:
                 Category: Source
                 Owner: ThirdParty
                 Provider: GitHub
-                Version: 1
+                Version: "1"
               OutputArtifacts:
                 - Name: SourceOutput
               Configuration:
-                Owner: !Select [ 0, !Split [ "/", !Ref GitHubRepo ] ]
-                Repo: !Select [ 1, !Split [ "/", !Ref GitHubRepo ] ]
+                Owner: !Select [0, !Split ["/", !Ref GitHubRepo]]
+                Repo: !Select [1, !Split ["/", !Ref GitHubRepo]]
                 Branch: !Ref GitHubBranch
                 OAuthToken: !Ref GitHubToken
+
         - Name: Build
           Actions:
             - Name: CodeBuild
@@ -296,11 +342,14 @@ Resources:
                 Category: Build
                 Owner: AWS
                 Provider: CodeBuild
-                Version: 1
+                Version: "1"
               InputArtifacts:
                 - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
               Configuration:
                 ProjectName: !Ref CodeBuildProject
+
         - Name: Deploy
           Actions:
             - Name: DeployToECS
@@ -308,14 +357,13 @@ Resources:
                 Category: Deploy
                 Owner: AWS
                 Provider: ECS
-                Version: 1
+                Version: "1"
               InputArtifacts:
-                - Name: SourceOutput
+                - Name: BuildOutput
               Configuration:
                 ClusterName: !Ref ECSCluster
                 ServiceName: !Ref ECSService
                 FileName: imagedefinitions.json
-
   ### CloudWatch Alarm ###
   BuildFailureAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -337,3 +385,4 @@ Outputs:
   LoadBalancerDNS:
     Description: "URL to access the app"
     Value: !GetAtt ApplicationLoadBalancer.DNSName
+
