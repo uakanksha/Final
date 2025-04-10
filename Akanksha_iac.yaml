@@ -4,7 +4,7 @@ Description: Wild Rydes Fargate App with CI/CD via CodePipeline
 Parameters:
   GitHubRepo:
     Type: String
-    Default: uakanksha/Final_test
+    Default: uakanksha/Final
   GitHubBranch:
     Type: String
     Default: main
